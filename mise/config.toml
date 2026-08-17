@@ -2,8 +2,10 @@
 "aqua:JohnnyMorganz/StyLua" = "latest"
 "aqua:LuaLS/lua-language-server" = "latest"
 "aqua:neovim/neovim" = "latest"
+"github:composer/composer" = { version = "latest", bin = "composer" }
+"github:laravel/lsp" = { version = "latest", bin = "laravel-lsp" }
 "npm:intelephense" = "latest"
-"npm:typescript-language-server" = "latest"
+"npm:typescript" = "latest"
 fd = "latest"
 fzf = "latest"
 gh = "latest"

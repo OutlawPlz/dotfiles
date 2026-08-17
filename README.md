@@ -48,18 +48,20 @@ sudo apt install bash-completion build-essential caddy curl git unzip
 Gli strumenti globali sono dichiarati in [`mise/config.toml`](mise/config.toml).
 Attualmente sono gestiti:
 
+- `composer`;
 - `fd`;
 - `fzf`;
 - `gh`;
 - `glab`;
 - `intelephense`;
 - `jq`;
+- `laravel-lsp`;
 - `lua-language-server`;
 - `neovim`;
 - `node`;
 - `rg`;
 - `stylua`;
-- `typescript-language-server`;
+- `typescript`;
 - `tree-sitter`.
 
 Per installarli o aggiornarli:
@@ -103,34 +105,3 @@ Per vedere tutte le opzioni disponibili:
 ```bash
 git mr --help
 ```
-
-## Caddy
-
-La configurazione di Caddy è specifica della macchina e non viene versionata.
-Per esporre servizi locali tramite reverse proxy, si possono aggiungere blocchi
-come questi a `/etc/caddy/Caddyfile`:
-
-```caddyfile
-welfare.localhost:80 {
-    reverse_proxy 127.0.0.1:8000
-}
-
-minio.localhost:80 {
-    reverse_proxy 127.0.0.1:9001
-}
-```
-
-Dopo una modifica, validare la configurazione e ricaricare il servizio:
-
-```bash
-sudo caddy validate --config /etc/caddy/Caddyfile
-sudo systemctl reload caddy
-```
-
-## Dati esclusi
-
-- token e credenziali;
-- `~/.config/minio/env`;
-- configurazioni proxy specifiche della macchina;
-- cache e binari installati da `mise`;
-- configurazione Git personale o aziendale.
