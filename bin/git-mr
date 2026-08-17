@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+Usage: git mr [options]
+
+Create a GitLab merge request with glab.
+
+Options:
+  --assignee USER       Override mr.assignee
+  --target BRANCH       Override mr.target
+  --remote REMOTE       Override mr.remote (default: origin)
+  --title TITLE         Use TITLE and do not open the editor
+  --description TEXT    Use TEXT as the description with --title
+  --draft               Create a draft merge request
+  --dry-run             Print the planned operation without changing anything
+  --no-squash           Disable mr.squash for this invocation
+  --keep-source-branch  Disable mr.removeSourceBranch for this invocation
+  -h, --help            Show this help
+
+Repository configuration:
+  mr.assignee
+  mr.target
+  mr.remote
+  mr.squash
+  mr.removeSourceBranch
+  mr.template
+EOF
+}
+
+die() {
+    printf 'git mr: %s\n' "$*" >&2
+    exit 1
+}
+
+config_get() {
+    git config --get "$1" 2>/dev/null || true
+}
+
+config_bool() {
+    local value
+    value="$(git config --bool --get "$1" 2>/dev/null || true)"
+    [[ "$value" == "true" ]]
+}
+
+strip_blank_edges() {
+    awk '
+        NF { if (!started) { started = 1 } ; last = NR }
+        { lines[NR] = $0 }
+        END {
+            if (!started) { exit }
+            for (i = 1; i <= last; i++) {
+                if (!printing && lines[i] ~ /^[[:space:]]*$/) { continue }
+                printing = 1
+                print lines[i]
+            }
+        }
+    '
+}
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a Git repository"
+command -v glab >/dev/null 2>&1 || die "glab is not installed"
+
+assignee="$(config_get mr.assignee)"
+target="$(config_get mr.target)"
+remote="$(config_get mr.remote)"
+template="$(config_get mr.template)"
+squash=false
+remove_source_branch=false
+draft=false
+dry_run=false
+title=""
+description=""
+title_supplied=false
+
+[[ -n "$remote" ]] || remote="origin"
+config_bool mr.squash && squash=true
+config_bool mr.removeSourceBranch && remove_source_branch=true
+
+while (($#)); do
+    case "$1" in
+        --assignee)
+            (($# >= 2)) || die "--assignee requires a username"
+            assignee="$2"
+            shift 2
+            ;;
+        --target)
+            (($# >= 2)) || die "--target requires a branch"
+            target="$2"
+            shift 2
+            ;;
+        --remote)
+            (($# >= 2)) || die "--remote requires a remote name"
+            remote="$2"
+            shift 2
+            ;;
+        --title)
+            (($# >= 2)) || die "--title requires a value"
+            title="$2"
+            title_supplied=true
+            shift 2
+            ;;
+        --description)
+            (($# >= 2)) || die "--description requires a value"
+            description="$2"
+            shift 2
+            ;;
+        --draft)
+            draft=true
+            shift
+            ;;
+        --dry-run)
+            dry_run=true
+            shift
+            ;;
+        --no-squash)
+            squash=false
+            shift
+            ;;
+        --keep-source-branch)
+            remove_source_branch=false
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            die "unknown option: $1"
+            ;;
+    esac
+done
+
+[[ -z "$description" || "$title_supplied" == true ]] || die "--description requires --title"
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+[[ -n "$branch" ]] || die "detached HEAD is not supported"
+git remote get-url "$remote" >/dev/null 2>&1 || die "remote '$remote' does not exist"
+
+if [[ -z "$target" ]]; then
+    target="$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+    target="${target#"$remote/"}"
+fi
+
+[[ -n "$target" ]] || die "target branch is missing; run: git config --local mr.target <branch>"
+[[ "$branch" != "$target" ]] || die "source branch '$branch' is also the target branch"
+[[ -n "$assignee" ]] || die "assignee is missing; run: git config --local mr.assignee <username>"
+
+remote_ref="refs/remotes/$remote/$branch"
+git show-ref --verify --quiet "$remote_ref" ||
+    die "'$branch' is not on '$remote'; run: git push --set-upstream $remote $branch"
+git merge-base --is-ancestor HEAD "$remote_ref" ||
+    die "'$branch' has commits that are not on '$remote'; run: git push $remote $branch"
+
+if [[ "$title_supplied" == false ]]; then
+    editor="${VISUAL:-${EDITOR:-$(config_get core.editor)}}"
+    [[ -n "$editor" ]] || editor="vi"
+
+    initial_title=""
+    target_ref="refs/remotes/$remote/$target"
+    if git show-ref --verify --quiet "$target_ref"; then
+        initial_title="$(git log --reverse --format=%s "$target_ref..HEAD" | head -n 1)"
+    fi
+    [[ -n "$initial_title" ]] || initial_title="${branch//[-_]/ }"
+
+    message_file="$(mktemp "${TMPDIR:-/tmp}/git-mr.XXXXXX.md")"
+    trap 'rm -f "$message_file"' EXIT
+
+    printf '%s\n\n' "$initial_title" >"$message_file"
+    if [[ -n "$template" ]]; then
+        template_path="$template"
+        if [[ "$template_path" != */* ]]; then
+            template_path=".gitlab/merge_request_templates/$template_path"
+        fi
+        [[ "$template_path" == *.md ]] || template_path="$template_path.md"
+        [[ -f "$template_path" ]] || die "template not found: $template_path"
+        command cat "$template_path" >>"$message_file"
+        printf '\n' >>"$message_file"
+    fi
+    cat >>"$message_file" <<'EOF'
+
+<!-- git-mr: the first line is the title; everything after the blank line is the description -->
+EOF
+
+    read -r -a editor_command <<<"$editor"
+    "${editor_command[@]}" "$message_file"
+
+    title="$(sed -n '1p' "$message_file" | sed 's/[[:space:]]*$//')"
+    description="$(sed -e '1d' -e '/^<!-- git-mr:/d' "$message_file" | strip_blank_edges)"
+fi
+
+[[ -n "$title" ]] || die "title cannot be empty"
+
+glab_options=(
+    mr create
+    --source-branch "$branch"
+    --target-branch "$target"
+    --assignee "$assignee"
+    --title "$title"
+    --description "$description"
+    --no-editor
+    --yes
+)
+
+[[ "$squash" == true ]] && glab_options+=(--squash-before-merge=true)
+[[ "$remove_source_branch" == true ]] && glab_options+=(--remove-source-branch=true)
+[[ "$draft" == true ]] && glab_options+=(--draft)
+[[ "$remote" != "origin" ]] && glab_options+=(--repo "$(git remote get-url "$remote")")
+
+if [[ "$dry_run" == true ]]; then
+    printf 'glab'
+    printf ' %q' "${glab_options[@]}"
+    printf '\n'
+    exit 0
+fi
+
+glab "${glab_options[@]}"
