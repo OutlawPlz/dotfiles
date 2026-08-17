@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+use_editor=true
+
+for argument in "$@"; do
+    case "$argument" in
+        -w|--web)
+            use_editor=false
+            ;;
+    esac
+done
+
+if "$use_editor"; then
+    exec gh pr create --editor "$@"
+fi
+
+exec gh pr create "$@"

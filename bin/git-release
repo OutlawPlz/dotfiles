@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+usage() {
+    echo 'usage: git release vX.Y.Z' >&2
+    exit 1
+}
+
+fail() {
+    echo "git release: $1" >&2
+    exit 1
+}
+
+configuration() {
+    git config --local --get "$1" || printf '%s\n' "$2"
+}
+
+[[ $# -eq 1 ]] || usage
+[[ $1 =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || usage
+
+tag=$1
+date=$(date +%Y-%m-%d)
+source_branch=$(configuration release.source-branch develop)
+target_branch=$(configuration release.target-branch main)
+remote=$(configuration release.remote origin)
+workflow=$(configuration release.workflow test.yml)
+changelog=$(configuration release.changelog CHANGELOG.md)
+
+[[ -f $changelog ]] || fail "$changelog not found"
+
+branch=$(git rev-parse --abbrev-ref HEAD)
+[[ $branch == "$source_branch" ]] || fail "must run on $source_branch (current branch: $branch)"
+
+[[ -z $(git status --porcelain) ]] || fail 'working tree not clean'
+
+commit=$(git rev-parse HEAD)
+ci_run=$(gh run list \
+    --workflow "$workflow" \
+    --commit "$commit" \
+    --status success \
+    --limit 1 \
+    --json headSha,url \
+    --jq '.[] | [.headSha, .url] | @tsv')
+
+[[ -n $ci_run ]] || fail "no successful CI run found for commit $commit"
+
+ci_commit=${ci_run%%$'\t'*}
+ci_url=${ci_run#*$'\t'}
+
+[[ $ci_commit == "$commit" ]] || fail "successful CI run does not match commit $commit"
+
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null && fail "tag $tag already exists"
+
+notes=$(awk '/^## Unreleased$/{f=1;next} /^## /{f=0} f' "$changelog")
+[[ -n ${notes//[[:space:]]/} ]] || fail 'the Unreleased section is empty'
+
+echo "Releasing $tag, dated $date, with these notes:"
+echo "Verified CI: $ci_url"
+echo
+echo "$notes"
+echo
+read -rp 'Proceed? [y/N] ' answer
+[[ $answer == [yY] ]] || exit 1
+
+sed -i "s/^## Unreleased$/## Unreleased\n\n## $tag\n\nReleased on _**$date**_./" "$changelog"
+
+git add "$changelog"
+git commit -m "Releases $tag"
+
+git checkout "$target_branch"
+git merge --no-ff -m "Merge branch '$source_branch'" "$source_branch"
+
+git tag -s --cleanup=whitespace "$tag" -m "$tag" -m "$notes"
+git push "$remote" "$target_branch" "$tag"
+
+git checkout "$source_branch"
+git push "$remote" "$source_branch"
+
+echo "Released $tag"
